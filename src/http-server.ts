@@ -314,71 +314,79 @@ function handleMultipartUpload(
   });
 
   busboy.on('finish', async () => {
-    if (fileError) {
+  // Wait for any in‑flight file save operations to complete.
+  try {
+    if (filePromises.length) {
+      await Promise.all(filePromises);
+    }
+  } catch {
+    // An error will already be reflected in fileError.
+  }
+
+  if (fileError) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: fileError.message }));
+    return;
+  }
+
+  if (!savedMeta) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'No file received' }));
+    return;
+  }
+
+  if (!autoConvert) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      ok: true,
+      filepath: savedMeta.absolutePath,
+      size: savedMeta.size,
+      sha256: savedMeta.sha256,
+      originalName: savedMeta.originalName
+    }));
+    return;
+  }
+
+  // --- Auto‑convert branch ---
+  try {
+    let markdown: string | undefined;
+
+    if (FILE_TOOL_SET.has(tool || '')) {
+      const result = await Markdownify.toMarkdown({
+        filePath: savedMeta.absolutePath,
+        uvPath: process.env.UV_PATH
+      });
+      markdown = result.text;
+    } else if (tool === GET_TOOL) {
+      const result = await Markdownify.get({
+        filePath: savedMeta.absolutePath
+      });
+      markdown = result.text;
+    } else {
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: fileError.message }));
-      return;
-    }
-    if (!savedMeta) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'No file received' }));
+      res.end(JSON.stringify({
+        error: `Tool "${tool}" not valid for auto-convert upload`
+      }));
       return;
     }
 
-    if (!autoConvert) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(
-        JSON.stringify({
-          ok: true,
-          filepath: savedMeta.absolutePath,
-            // The client can later call /convert with this path
-          size: savedMeta.size,
-          sha256: savedMeta.sha256,
-          originalName: savedMeta.originalName
-        })
-      );
-      return;
-    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      ok: true,
+      tool,
+      filepath: savedMeta.absolutePath,
+      markdown,
+      size: savedMeta.size,
+      sha256: savedMeta.sha256,
+      originalName: savedMeta.originalName
+    }));
+  } catch (err) {
+    const e = err instanceof Error ? err : new Error(String(err));
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: e.message || 'auto-convert failed' }));
+  }
+});
 
-    // Auto-convert path
-    try {
-      let markdown: string | undefined;
-
-      if (FILE_TOOL_SET.has(tool || '')) {
-        const result = await Markdownify.toMarkdown({
-          filePath: savedMeta.absolutePath,
-          uvPath: process.env.UV_PATH
-        });
-        markdown = result.text;
-      } else if (tool === GET_TOOL) {
-        const result = await Markdownify.get({ filePath: savedMeta.absolutePath });
-        markdown = result.text;
-      } else {
-        // If tool is not a file tool or get-markdown-file, respond with just upload meta
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(
-          JSON.stringify({
-            error: `Tool "${tool}" not valid for auto-convert upload`
-          })
-        );
-        return;
-      }
-
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(
-        JSON.stringify({
-          ok: true,
-          tool,
-          filepath: savedMeta.absolutePath,
-          markdown,
-          size: savedMeta.size
-        })
-      );
-    } catch (err: any) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: err.message || 'auto-convert failed' }));
-    }
-  });
 
   req.pipe(busboy);
 }
