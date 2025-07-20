@@ -154,6 +154,234 @@ const FILE_TOOL_SET = new Set([
 
 const GET_TOOL = GetMarkdownFileTool.name;
 
+/* ======================================================================
+ * MCP HTTP EXTENSION (JSON-RPC over /mcp)
+ * ====================================================================== */
+
+const PROTOCOL_VERSION = '2024-11-0';
+const MCP_HTTP_KEY = process.env.MCP_HTTP_KEY || null;
+
+interface JsonRpcRequest {
+  jsonrpc: '2.0';
+  id?: string | number | null;
+  method: string;
+  params?: any;
+}
+interface JsonRpcSuccess {
+  jsonrpc: '2.0';
+  id: string | number | null;
+  result: any;
+}
+interface JsonRpcError {
+  jsonrpc: '2.0';
+  id: string | number | null;
+  error: { code: number; message: string };
+}
+type JsonRpcResponse = JsonRpcSuccess | JsonRpcError;
+
+function rpcSuccess(id: any, result: any): JsonRpcSuccess {
+  return { jsonrpc: '2.0', id, result };
+}
+function rpcError(id: any, code: number, message: string): JsonRpcError {
+  return { jsonrpc: '2.0', id, error: { code, message } };
+}
+
+// Lightweight per-tool schema/description
+const MCP_TOOL_SCHEMAS: Record<
+  string,
+  { description: string; inputSchema: any }
+> = {
+  [YouTubeToMarkdownTool.name]: {
+    description: 'Convert a YouTube URL to markdown.',
+    inputSchema: {
+      type: 'object',
+      required: ['url'],
+      properties: { url: { type: 'string' } },
+      additionalProperties: false
+    }
+  },
+  [BingSearchResultToMarkdownTool.name]: {
+    description: 'Search Bing and summarize results as markdown.',
+    inputSchema: {
+      type: 'object',
+      required: ['query'],
+      properties: { query: { type: 'string' } },
+      additionalProperties: false
+    }
+  },
+  [WebpageToMarkdownTool.name]: {
+    description: 'Fetch webpage and convert to markdown.',
+    inputSchema: {
+      type: 'object',
+      required: ['url'],
+      properties: { url: { type: 'string' } },
+      additionalProperties: false
+    }
+  },
+  [PDFToMarkdownTool.name]: {
+    description: 'Convert PDF file to markdown.',
+    inputSchema: {
+      type: 'object',
+      required: ['filepath'],
+      properties: { filepath: { type: 'string' } },
+      additionalProperties: false
+    }
+  },
+  [ImageToMarkdownTool.name]: {
+    description: 'Describe or OCR image to markdown.',
+    inputSchema: {
+      type: 'object',
+      required: ['filepath'],
+      properties: { filepath: { type: 'string' } },
+      additionalProperties: false
+    }
+  },
+  [AudioToMarkdownTool.name]: {
+    description: 'Transcribe audio file to markdown.',
+    inputSchema: {
+      type: 'object',
+      required: ['filepath'],
+      properties: { filepath: { type: 'string' } },
+      additionalProperties: false
+    }
+  },
+  [DocxToMarkdownTool.name]: {
+    description: 'Convert DOCX file to markdown.',
+    inputSchema: {
+      type: 'object',
+      required: ['filepath'],
+      properties: { filepath: { type: 'string' } },
+      additionalProperties: false
+    }
+  },
+  [XlsxToMarkdownTool.name]: {
+    description: 'Convert XLSX file to markdown tables.',
+    inputSchema: {
+      type: 'object',
+      required: ['filepath'],
+      properties: { filepath: { type: 'string' } },
+      additionalProperties: false
+    }
+  },
+  [PptxToMarkdownTool.name]: {
+    description: 'Convert PPTX slides to markdown.',
+    inputSchema: {
+      type: 'object',
+      required: ['filepath'],
+      properties: { filepath: { type: 'string' } },
+      additionalProperties: false
+    }
+  },
+  [GetMarkdownFileTool.name]: {
+    description: 'Read an existing markdown file.',
+    inputSchema: {
+      type: 'object',
+      required: ['filepath'],
+      properties: { filepath: { type: 'string' } },
+      additionalProperties: false
+    }
+  }
+};
+
+async function runMcpConversion(tool: string, args: any) {
+  if (!TOOL_NAMES.includes(tool)) throw new Error(`Unknown tool: ${tool}`);
+
+  if (URL_TOOL_SET.has(tool)) {
+    const url = args?.url || (args?.query && `bing:${args.query}`);
+    if (!url) throw new Error('url/query required');
+    const result = await Markdownify.toMarkdown({
+      url,
+      uvPath: process.env.UV_PATH
+    });
+    return { markdown: result.text };
+  }
+
+  if (FILE_TOOL_SET.has(tool)) {
+    const filepath = args?.filepath;
+    if (!filepath) throw new Error('filepath required');
+    if (ENFORCE_SHARE_DIR) {
+      const realFile = await realpath(filepath);
+      const base = await realpath(UPLOAD_ROOT);
+      if (!realFile.startsWith(base))
+        throw new Error('File path is outside allowed directory');
+    }
+    const result = await Markdownify.toMarkdown({
+      filePath: filepath,
+      uvPath: process.env.UV_PATH
+    });
+    return { markdown: result.text };
+  }
+
+  if (tool === GET_TOOL) {
+    const filepath = args?.filepath;
+    if (!filepath) throw new Error('filepath required');
+    if (ENFORCE_SHARE_DIR) {
+      const realFile = await realpath(filepath);
+      const base = await realpath(UPLOAD_ROOT);
+      if (!realFile.startsWith(base))
+        throw new Error('File path is outside allowed directory');
+    }
+    const lower = filepath.toLowerCase();
+    if (!lower.endsWith('.md') && !lower.endsWith('.markdown')) {
+      throw new Error('File is not a markdown file');
+    }
+    const result = await Markdownify.get({ filePath: filepath });
+    return { markdown: result.text };
+  }
+
+  throw new Error(`Unhandled tool: ${tool}`);
+}
+
+async function handleMcpRequest(r: JsonRpcRequest): Promise<JsonRpcResponse> {
+  const { id = null, method, params = {} } = r;
+  try {
+    switch (method) {
+      case 'initialize':
+        return rpcSuccess(id, {
+          protocolVersion: PROTOCOL_VERSION,
+          capabilities: { tools: {}, resources: {} },
+          serverInfo: { name: 'markdownify-http', version: '1.0.0' }
+        });
+
+      case 'tools/list':
+      case 'list_tools':
+        return rpcSuccess(id, {
+          tools: TOOL_NAMES.map((name) => ({
+            name,
+            description:
+              MCP_TOOL_SCHEMAS[name]?.description || `Tool ${name}`,
+            inputSchema:
+              MCP_TOOL_SCHEMAS[name]?.inputSchema || { type: 'object' }
+          }))
+        });
+
+      case 'tools/call':
+      case 'call_tool': {
+        const { name, arguments: args } = params;
+        if (!name) throw new Error('name is required');
+        const { markdown } = await runMcpConversion(name, args || {});
+        return rpcSuccess(id, {
+          content: [{ type: 'text', text: markdown }],
+          meta: { tool: name }
+        });
+      }
+
+      case 'ping':
+        return rpcSuccess(id, { pong: true, ts: Date.now() });
+
+      case 'shutdown':
+        setTimeout(() => process.exit(0), 5);
+        return rpcSuccess(id, { ok: true });
+
+      default:
+        return rpcError(id, -32601, 'Method not found');
+    }
+  } catch (e) {
+    const err = toError(e);
+    return rpcError(id, -32000, err.message);
+  }
+}
+
 /**
  * ----------------------------
  * Hono App
@@ -226,6 +454,58 @@ app.post('/convert', async (c) => {
     const err = toError(e);
     return c.json({ error: err.message || 'conversion error' }, 500);
   }
+});
+
+/* ---------------- MCP over HTTP endpoint (/mcp) ---------------- */
+app.post('/mcp', async (c) => {
+  if (MCP_HTTP_KEY && c.req.header('x-api-key') !== MCP_HTTP_KEY) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+
+  const urlObj = new URL(c.req.url, 'http://localhost');
+  const wantStream = urlObj.searchParams.get('stream') === '1';
+
+  let payload: any;
+  try {
+    payload = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid JSON' }, 400);
+  }
+
+  const requests: JsonRpcRequest[] = Array.isArray(payload) ? payload : [payload];
+
+  if (!wantStream) {
+    const responses: JsonRpcResponse[] = [];
+    for (const r of requests) {
+      responses.push(await handleMcpRequest(r));
+    }
+    return c.json(Array.isArray(payload) ? responses : responses[0]);
+  }
+
+  // SSE streaming
+  const stream = new ReadableStream({
+    async start(controller) {
+      const enc = new TextEncoder();
+      function sendEvent(obj: any, event = 'message') {
+        controller.enqueue(enc.encode(`event: ${event}\ndata: ${JSON.stringify(obj)}\n\n`));
+      }
+      for (const r of requests) {
+        const resp = await handleMcpRequest(r);
+        sendEvent(resp);
+      }
+      sendEvent({}, 'end');
+      controller.close();
+    }
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no'
+    }
+  });
 });
 
 /**
@@ -420,7 +700,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // Delegate to Hono
+    // Delegate remaining to Hono
     const url = `http://${req.headers.host}${req.url}`;
     const body =
       req.method === 'GET' || req.method === 'HEAD'
@@ -456,4 +736,8 @@ server.listen(PORT, () => {
   console.log(`HTTP server listening on http://localhost:${PORT}`);
   console.log(`Upload directory: ${UPLOAD_ROOT}`);
   console.log(`Tools: ${TOOL_NAMES.join(', ')}`);
+  if (MCP_HTTP_KEY) {
+    console.log('MCP endpoint secured with API key.');
+  }
+  console.log('MCP endpoint: POST /mcp (add ?stream=1 for SSE)');
 });
