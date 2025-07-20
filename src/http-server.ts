@@ -162,8 +162,8 @@ import http, { IncomingMessage, ServerResponse } from "node:http";
 import Busboy from "busboy";
 
 /* ---- Environment / Config ---- */
-const ENABLE_HTTP = !!process.env.ENABLE_HTTP;
-const ENABLE_SSE = !!process.env.ENABLE_SSE;
+const ENABLE_HTTP = true;
+const ENABLE_SSE = true;
 const PORT = Number(process.env.PORT || 3100);
 const UPLOAD_ROOT = process.env.MD_SHARE_DIR || join(process.cwd(), "uploads");
 const ENFORCE_SHARE_DIR = !!process.env.MD_SHARE_DIR;
