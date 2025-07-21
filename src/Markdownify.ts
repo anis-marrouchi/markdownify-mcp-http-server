@@ -34,6 +34,7 @@ export class Markdownify {
 
     const { stdout, stderr } = await execAsync(
       `${uvPath} run ${markitdownPath} "${filePath}"`,
+      { maxBuffer: 10 * 1024 * 1024 } // 10MB buffer
     );
 
     if (stderr) {

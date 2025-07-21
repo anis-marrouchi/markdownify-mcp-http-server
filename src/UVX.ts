@@ -33,7 +33,7 @@ export default class UVX {
   async installDeps() {
     // This is a hack to make sure that markitdown is installed before it's called in the OCRProcessor
     try {
-      await execAsync(`${this.uvxPath} markitdown example.pdf`);
+      await execAsync(`${this.uvxPath} markitdown example.pdf`, { maxBuffer: 10 * 1024 * 1024 });
     } catch {
       console.log("UVX markitdown should be ready now");
     }
