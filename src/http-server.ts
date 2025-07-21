@@ -110,7 +110,7 @@ export function createServer() {
             result = await Markdownify.get({ filePath: validatedArgs.filepath });
             break;
           }
-          case tools.UploadAndConvertTool.name: {
+          case tools.UploadFileForConversionTool.name: {
             const { tool_type } = validatedArgs as any;
             if (!tool_type) throw new Error("tool_type is required");
             
@@ -702,7 +702,7 @@ const server = http.createServer(async (req, res) => {
                 conversionResult = await Markdownify.get({ filePath: validatedArgs.filepath });
                 break;
               }
-              case tools.UploadAndConvertTool.name: {
+              case tools.UploadFileForConversionTool.name: {
                 const { tool_type } = validatedArgs as any;
                 if (!tool_type) throw new Error("tool_type is required");
                 
