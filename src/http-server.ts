@@ -97,12 +97,35 @@ export function createServer() {
           case tools.DocxToMarkdownTool.name:
           case tools.XlsxToMarkdownTool.name:
           case tools.PptxToMarkdownTool.name: {
-            if (!validatedArgs.filepath) throw new Error("File path is required");
-            result = await Markdownify.toMarkdown({
-              filePath: validatedArgs.filepath,
-              projectRoot: validatedArgs.projectRoot,
-              uvPath: validatedArgs.uvPath || process.env.UV_PATH,
-            });
+            if (validatedArgs.url) {
+              // Handle remote files via URL
+              const parsedUrl = new URL(validatedArgs.url);
+              if (!["http:", "https:"].includes(parsedUrl.protocol))
+                throw new Error("Only http/https URLs allowed.");
+              if (is_ip_private(parsedUrl.hostname))
+                throw new Error("Potentially dangerous URL (private IP)");
+              result = await Markdownify.toMarkdown({
+                url: validatedArgs.url,
+                projectRoot: validatedArgs.projectRoot,
+                uvPath: validatedArgs.uvPath || process.env.UV_PATH,
+              });
+            } else if (validatedArgs.filepath) {
+              // Check if filepath looks like a local path on a different machine
+              const filepath = validatedArgs.filepath;
+              if (filepath.startsWith('/Users/') || filepath.startsWith('/home/') || 
+                  filepath.match(/^[A-Z]:\\/)) {
+                throw new Error(`Local file path detected: "${filepath}". For remote servers, files must be uploaded first or accessed via URL. Use the upload-file-for-conversion tool for instructions.`);
+              }
+              
+              // Handle server-accessible files
+              result = await Markdownify.toMarkdown({
+                filePath: validatedArgs.filepath,
+                projectRoot: validatedArgs.projectRoot,
+                uvPath: validatedArgs.uvPath || process.env.UV_PATH,
+              });
+            } else {
+              throw new Error("Either filepath (server-accessible) or url is required");
+            }
             break;
           }
           case tools.GetMarkdownFileTool.name: {
