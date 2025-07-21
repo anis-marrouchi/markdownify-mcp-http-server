@@ -45,6 +45,8 @@ const RequestPayloadSchema = z.object({
   url: z.string().optional(),
   projectRoot: z.string().optional(),
   uvPath: z.string().optional(),
+  tool_type: z.string().optional(),
+  instructions: z.boolean().optional(),
 });
 
 export function createServer() {
@@ -106,6 +108,61 @@ export function createServer() {
           case tools.GetMarkdownFileTool.name: {
             if (!validatedArgs.filepath) throw new Error("File path is required");
             result = await Markdownify.get({ filePath: validatedArgs.filepath });
+            break;
+          }
+          case tools.UploadAndConvertTool.name: {
+            const { tool_type } = validatedArgs as any;
+            if (!tool_type) throw new Error("tool_type is required");
+            
+            const uploadInstructions = `
+# File Upload Instructions
+
+To upload and convert files when using the remote server (https://markdownify.mcp.noqta.tn/):
+
+## Method 1: Upload and Convert in One Step
+\`\`\`bash
+curl -X POST https://markdownify.mcp.noqta.tn/upload-and-convert?tool=${tool_type} \\
+  -H "Content-Type: multipart/form-data" \\
+  -F "file=@/path/to/your/file"
+\`\`\`
+
+## Method 2: Upload First, Then Convert
+1. **Upload the file:**
+\`\`\`bash
+curl -X POST https://markdownify.mcp.noqta.tn/upload \\
+  -H "Content-Type: multipart/form-data" \\
+  -F "file=@/path/to/your/file"
+\`\`\`
+
+2. **Use the returned filepath with the MCP tool:**
+Use the \`filepath\` from the upload response in your MCP tool call.
+
+## Method 3: Use URL (for files already online)
+If your file is already accessible via URL, use the \`url\` parameter directly:
+\`\`\`json
+{
+  "name": "${tool_type}",
+  "arguments": {
+    "url": "https://example.com/your-file.pdf"
+  }
+}
+\`\`\`
+
+## Supported File Types
+- PDF files (.pdf)
+- Image files (.jpg, .jpeg, .png, .gif, .bmp, .webp)
+- Audio files (.mp3, .wav, .m4a, .flac, .aac)
+- Document files (.docx, .xlsx, .pptx)
+
+## Upload Limits
+- Maximum file size: ${Math.round(MAX_UPLOAD_BYTES / (1024 * 1024))}MB
+- Files are automatically cleaned up after ${Math.round(UPLOAD_TTL_MS / (60 * 60 * 1000))} hour(s)
+`;
+
+            result = {
+              path: "upload-instructions.md",
+              text: uploadInstructions,
+            };
             break;
           }
           default:
@@ -608,25 +665,96 @@ const server = http.createServer(async (req, res) => {
                 });
                 break;
               }
-              case tools.PDFToMarkdownTool.name:
-              case tools.ImageToMarkdownTool.name:
-              case tools.AudioToMarkdownTool.name:
-              case tools.DocxToMarkdownTool.name:
-              case tools.XlsxToMarkdownTool.name:
-              case tools.PptxToMarkdownTool.name: {
-                if (!validatedArgs.filepath) throw new Error("File path is required");
-                await sandboxFilePath(validatedArgs.filepath);
-                conversionResult = await Markdownify.toMarkdown({
-                  filePath: validatedArgs.filepath,
-                  projectRoot: validatedArgs.projectRoot,
-                  uvPath: validatedArgs.uvPath || process.env.UV_PATH,
-                });
-                break;
-              }
+          case tools.PDFToMarkdownTool.name:
+          case tools.ImageToMarkdownTool.name:
+          case tools.AudioToMarkdownTool.name:
+          case tools.DocxToMarkdownTool.name:
+          case tools.XlsxToMarkdownTool.name:
+          case tools.PptxToMarkdownTool.name: {
+            if (validatedArgs.url) {
+              // Handle remote files via URL
+              const parsedUrl = new URL(validatedArgs.url);
+              if (!["http:", "https:"].includes(parsedUrl.protocol))
+                throw new Error("Only http/https allowed.");
+              if (is_ip_private(parsedUrl.hostname))
+                throw new Error("Potentially dangerous URL (private IP)");
+              conversionResult = await Markdownify.toMarkdown({
+                url: validatedArgs.url,
+                projectRoot: validatedArgs.projectRoot,
+                uvPath: validatedArgs.uvPath || process.env.UV_PATH,
+              });
+            } else if (validatedArgs.filepath) {
+              // Handle local files
+              await sandboxFilePath(validatedArgs.filepath);
+              conversionResult = await Markdownify.toMarkdown({
+                filePath: validatedArgs.filepath,
+                projectRoot: validatedArgs.projectRoot,
+                uvPath: validatedArgs.uvPath || process.env.UV_PATH,
+              });
+            } else {
+              throw new Error("Either filepath or url is required");
+            }
+            break;
+          }
               case tools.GetMarkdownFileTool.name: {
                 if (!validatedArgs.filepath) throw new Error("File path is required");
                 await sandboxFilePath(validatedArgs.filepath);
                 conversionResult = await Markdownify.get({ filePath: validatedArgs.filepath });
+                break;
+              }
+              case tools.UploadAndConvertTool.name: {
+                const { tool_type } = validatedArgs as any;
+                if (!tool_type) throw new Error("tool_type is required");
+                
+                const uploadInstructions = `
+# File Upload Instructions
+
+To upload and convert files when using the remote server (https://markdownify.mcp.noqta.tn/):
+
+## Method 1: Upload and Convert in One Step
+\`\`\`bash
+curl -X POST https://markdownify.mcp.noqta.tn/upload-and-convert?tool=${tool_type} \\
+  -H "Content-Type: multipart/form-data" \\
+  -F "file=@/path/to/your/file"
+\`\`\`
+
+## Method 2: Upload First, Then Convert
+1. **Upload the file:**
+\`\`\`bash
+curl -X POST https://markdownify.mcp.noqta.tn/upload \\
+  -H "Content-Type: multipart/form-data" \\
+  -F "file=@/path/to/your/file"
+\`\`\`
+
+2. **Use the returned filepath with the MCP tool:**
+Use the \`filepath\` from the upload response in your MCP tool call.
+
+## Method 3: Use URL (for files already online)
+If your file is already accessible via URL, use the \`url\` parameter directly:
+\`\`\`json
+{
+  "name": "${tool_type}",
+  "arguments": {
+    "url": "https://example.com/your-file.pdf"
+  }
+}
+\`\`\`
+
+## Supported File Types
+- PDF files (.pdf)
+- Image files (.jpg, .jpeg, .png, .gif, .bmp, .webp)
+- Audio files (.mp3, .wav, .m4a, .flac, .aac)
+- Document files (.docx, .xlsx, .pptx)
+
+## Upload Limits
+- Maximum file size: ${Math.round(MAX_UPLOAD_BYTES / (1024 * 1024))}MB
+- Files are automatically cleaned up after ${Math.round(UPLOAD_TTL_MS / (60 * 60 * 1000))} hour(s)
+`;
+
+                conversionResult = {
+                  path: "upload-instructions.md",
+                  text: uploadInstructions,
+                };
                 break;
               }
               default:
