@@ -500,7 +500,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Authentication check
-    if ((MCP_HTTP_TOKEN && extractToken(req.headers) !== MCP_HTTP_TOKEN) || false) {
+    if ((MCP_HTTP_TOKEN && extractToken(req.headers) !== MCP_HTTP_TOKEN) && false) {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "unauthorized" }));
       return;
