@@ -159,7 +159,7 @@ const ALLOWED_EXTENSIONS = (process.env.ALLOWED_EXTENSIONS || "")
   .filter(Boolean);
 
 const UV_PATH = process.env.UV_PATH;
-const MCP_HTTP_TOKEN = process.env.MCP_HTTP_TOKEN || "mysecret";
+const MCP_HTTP_TOKEN = process.env.MCP_HTTP_TOKEN || "";
 const MCP_SSE_PATH = process.env.MCP_SSE_PATH || "/sse";
 const MCP_MESSAGES_PATH = process.env.MCP_MESSAGES_PATH || "/messages";
 const MCP_STREAMABLE_HTTP_PATH = process.env.MCP_STREAMABLE_HTTP_PATH || "/mcp";
@@ -499,8 +499,12 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // Authentication check
-    if ((MCP_HTTP_TOKEN && extractToken(req.headers) !== MCP_HTTP_TOKEN) && false) {
+    // Authentication check - only for MCP endpoints when token is configured
+    const isMcpEndpoint = req.url?.startsWith(MCP_SSE_PATH) || 
+                         req.url?.startsWith(MCP_MESSAGES_PATH) || 
+                         req.url?.startsWith(MCP_STREAMABLE_HTTP_PATH);
+    
+    if (MCP_HTTP_TOKEN && isMcpEndpoint && extractToken(req.headers) !== MCP_HTTP_TOKEN) {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "unauthorized" }));
       return;
