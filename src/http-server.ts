@@ -112,9 +112,29 @@ export function createServer() {
             } else if (validatedArgs.filepath) {
               // Check if filepath looks like a local path on a different machine
               const filepath = validatedArgs.filepath;
-              if (filepath.startsWith('/Users/') || filepath.startsWith('/home/') || 
-                  filepath.match(/^[A-Z]:\\/)) {
-                throw new Error(`Local file path detected: "${filepath}". For remote servers, files must be uploaded first or accessed via URL. Use the upload-file-for-conversion tool for instructions.`);
+              if (filepath.startsWith('/') || filepath.match(/^[A-Za-z]:[\\/]/)) {
+                throw new Error(
+`Local file path detected: "${filepath}". 
+
+For remote servers, files must be uploaded first before conversion. 
+
+Use the upload-file-for-conversion tool with these exact steps:
+
+1. First call the upload-file-for-conversion tool with your tool_type:
+\`\`\`json
+{
+  "name": "upload-file-for-conversion",
+  "arguments": {
+    "tool_type": "${name}"
+  }
+}
+\`\`\`
+
+2. Follow the returned upload instructions to upload your file
+3. Use the returned filepath with this tool to perform the conversion
+
+Alternatively, if your file is already online, use the 'url' parameter instead.`
+                );
               }
               
               // Handle server-accessible files
