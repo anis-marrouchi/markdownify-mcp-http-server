@@ -35,7 +35,7 @@ import {
   access,
 } from "node:fs/promises";
 import { createWriteStream } from "node:fs";
-import { randomBytes, createHash, randomUUID } from "node:crypto";
+import { randomBytes, createHash } from "node:crypto";
 import { basename, extname, join } from "node:path";
 
 /* -------------------- Original MCP stdio server -------------------- */
@@ -49,11 +49,28 @@ const RequestPayloadSchema = z.object({
   instructions: z.boolean().optional(),
 });
 
+const SearchArgsSchema = z.object({
+  query: z.string().transform(s => s.trim()),
+});
+
+const FetchArgsSchema = z.object({
+  id: z.string().trim().min(1, "id is required"),
+});
+
+type StandardToolArgs = z.infer<typeof RequestPayloadSchema>;
+
+function parseStandardArgs(args: unknown): StandardToolArgs {
+  if (args === undefined || args === null) return RequestPayloadSchema.parse({});
+  if (typeof args !== "object") throw new Error("Tool arguments must be an object");
+  return RequestPayloadSchema.parse(args);
+}
+
 export function createServer() {
   const server = new Server(
     {
       name: "mcp-markdownify-server",
       version: "0.1.0",
+      instructions: SERVER_INSTRUCTIONS,
     },
     {
       capabilities: { tools: {} },
@@ -68,52 +85,94 @@ export function createServer() {
     CallToolRequestSchema,
     async (request: CallToolRequest) => {
       const { name, arguments: args } = request.params;
-      const validatedArgs = RequestPayloadSchema.parse(args);
 
       try {
-        let result;
         switch (name) {
-          case tools.YouTubeToMarkdownTool.name:
-          case tools.BingSearchResultToMarkdownTool.name:
-          case tools.WebpageToMarkdownTool.name: {
-            if (!validatedArgs.url) throw new Error("URL is required");
-            const parsedUrl = new URL(validatedArgs.url);
-            if (!["http:", "https:"].includes(parsedUrl.protocol))
-              throw new Error("Only http/https URLs allowed.");
-            if (is_ip_private(parsedUrl.hostname))
-              throw new Error(
-                `Fetching ${validatedArgs.url} is potentially dangerous.`,
-              );
-            result = await Markdownify.toMarkdown({
-              url: validatedArgs.url,
-              projectRoot: validatedArgs.projectRoot,
-              uvPath: validatedArgs.uvPath || process.env.UV_PATH,
-            });
-            break;
+          case tools.SearchTool.name: {
+            const searchArgs = SearchArgsSchema.parse(
+              typeof args === "string" ? { query: args } : args || {},
+            );
+            const docs = searchConnectorDocs(searchArgs.query);
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    results: docs.map(doc => ({
+                      id: doc.id,
+                      title: doc.title,
+                      url: doc.url,
+                    })),
+                  }),
+                },
+              ],
+              isError: false,
+            };
           }
-          case tools.PDFToMarkdownTool.name:
-          case tools.ImageToMarkdownTool.name:
-          case tools.AudioToMarkdownTool.name:
-          case tools.DocxToMarkdownTool.name:
-          case tools.XlsxToMarkdownTool.name:
-          case tools.PptxToMarkdownTool.name: {
-            if (validatedArgs.url) {
-              // Handle remote files via URL
-              const parsedUrl = new URL(validatedArgs.url);
-              if (!["http:", "https:"].includes(parsedUrl.protocol))
-                throw new Error("Only http/https URLs allowed.");
-              if (is_ip_private(parsedUrl.hostname))
-                throw new Error("Potentially dangerous URL (private IP)");
-              result = await Markdownify.toMarkdown({
-                url: validatedArgs.url,
-                projectRoot: validatedArgs.projectRoot,
-                uvPath: validatedArgs.uvPath || process.env.UV_PATH,
-              });
-            } else if (validatedArgs.filepath) {
-              // Check if filepath looks like a local path on a different machine
-              const filepath = validatedArgs.filepath;
-              if (filepath.startsWith('/') || filepath.match(/^[A-Za-z]:[\\/]/)) {
-                throw new Error(
+          case tools.FetchTool.name: {
+            const fetchArgs = FetchArgsSchema.parse(
+              typeof args === "string" ? { id: args } : args || {},
+            );
+            const doc = getConnectorDoc(fetchArgs.id);
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    id: doc.id,
+                    title: doc.title,
+                    text: doc.text,
+                    url: doc.url,
+                    metadata: doc.metadata ?? null,
+                  }),
+                },
+              ],
+              isError: false,
+            };
+          }
+          default: {
+            const validatedArgs = parseStandardArgs(args);
+            let result;
+            switch (name) {
+              case tools.YouTubeToMarkdownTool.name:
+              case tools.BingSearchResultToMarkdownTool.name:
+              case tools.WebpageToMarkdownTool.name: {
+                if (!validatedArgs.url) throw new Error("URL is required");
+                const parsedUrl = new URL(validatedArgs.url);
+                if (!["http:", "https:"].includes(parsedUrl.protocol))
+                  throw new Error("Only http/https URLs allowed.");
+                if (is_ip_private(parsedUrl.hostname))
+                  throw new Error(
+                    `Fetching ${validatedArgs.url} is potentially dangerous.`,
+                  );
+                result = await Markdownify.toMarkdown({
+                  url: validatedArgs.url,
+                  projectRoot: validatedArgs.projectRoot,
+                  uvPath: validatedArgs.uvPath || process.env.UV_PATH,
+                });
+                break;
+              }
+              case tools.PDFToMarkdownTool.name:
+              case tools.ImageToMarkdownTool.name:
+              case tools.AudioToMarkdownTool.name:
+              case tools.DocxToMarkdownTool.name:
+              case tools.XlsxToMarkdownTool.name:
+              case tools.PptxToMarkdownTool.name: {
+                if (validatedArgs.url) {
+                  const parsedUrl = new URL(validatedArgs.url);
+                  if (!["http:", "https:"].includes(parsedUrl.protocol))
+                    throw new Error("Only http/https URLs allowed.");
+                  if (is_ip_private(parsedUrl.hostname))
+                    throw new Error("Potentially dangerous URL (private IP)");
+                  result = await Markdownify.toMarkdown({
+                    url: validatedArgs.url,
+                    projectRoot: validatedArgs.projectRoot,
+                    uvPath: validatedArgs.uvPath || process.env.UV_PATH,
+                  });
+                } else if (validatedArgs.filepath) {
+                  const filepath = validatedArgs.filepath;
+                  if (filepath.startsWith('/') || filepath.match(/^[A-Za-z]:[\\/]/)) {
+                    throw new Error(
 `Local file path detected: "${filepath}". 
 
 For remote servers, files must be uploaded first before conversion. 
@@ -134,30 +193,29 @@ Use the upload-file-for-conversion tool with these exact steps:
 3. Use the returned filepath with this tool to perform the conversion
 
 Alternatively, if your file is already online, use the 'url' parameter instead.`
-                );
+                    );
+                  }
+
+                  result = await Markdownify.toMarkdown({
+                    filePath: validatedArgs.filepath,
+                    projectRoot: validatedArgs.projectRoot,
+                    uvPath: validatedArgs.uvPath || process.env.UV_PATH,
+                  });
+                } else {
+                  throw new Error("Either filepath (server-accessible) or url is required");
+                }
+                break;
               }
-              
-              // Handle server-accessible files
-              result = await Markdownify.toMarkdown({
-                filePath: validatedArgs.filepath,
-                projectRoot: validatedArgs.projectRoot,
-                uvPath: validatedArgs.uvPath || process.env.UV_PATH,
-              });
-            } else {
-              throw new Error("Either filepath (server-accessible) or url is required");
-            }
-            break;
-          }
-          case tools.GetMarkdownFileTool.name: {
-            if (!validatedArgs.filepath) throw new Error("File path is required");
-            result = await Markdownify.get({ filePath: validatedArgs.filepath });
-            break;
-          }
-          case tools.UploadFileForConversionTool.name: {
-            const { tool_type } = validatedArgs as any;
-            if (!tool_type) throw new Error("tool_type is required");
-            
-            const uploadInstructions = `
+              case tools.GetMarkdownFileTool.name: {
+                if (!validatedArgs.filepath) throw new Error("File path is required");
+                result = await Markdownify.get({ filePath: validatedArgs.filepath });
+                break;
+              }
+              case tools.UploadFileForConversionTool.name: {
+                const { tool_type } = validatedArgs as any;
+                if (!tool_type) throw new Error("tool_type is required");
+
+                const uploadInstructions = `
 # File Upload Instructions
 
 To upload and convert files when using the remote server (https://markdownify.mcp.noqta.tn/):
@@ -202,24 +260,26 @@ If your file is already accessible via URL, use the \`url\` parameter directly:
 - Files are automatically cleaned up after ${Math.round(UPLOAD_TTL_MS / (60 * 60 * 1000))} hour(s)
 `;
 
-            result = {
-              path: "upload-instructions.md",
-              text: uploadInstructions,
-            };
-            break;
-          }
-          default:
-            throw new Error("Tool not found");
-        }
+                result = {
+                  path: "upload-instructions.md",
+                  text: uploadInstructions,
+                };
+                break;
+              }
+              default:
+                throw new Error("Tool not found");
+            }
 
-        return {
-          content: [
-            { type: "text", text: `Output file: ${result.path}` },
-            { type: "text", text: "Converted content:" },
-            { type: "text", text: result.text },
-          ],
-          isError: false,
-        };
+            return {
+              content: [
+                { type: "text", text: `Output file: ${result.path}` },
+                { type: "text", text: "Converted content:" },
+                { type: "text", text: result.text },
+              ],
+              isError: false,
+            };
+          }
+        }
       } catch (e) {
         if (e instanceof Error) {
           return {
@@ -266,12 +326,175 @@ const MCP_STREAMABLE_HTTP_PATH = process.env.MCP_STREAMABLE_HTTP_PATH || "/mcp";
 
 const PROTOCOL_VERSION = "2024-11-0";
 
-const TOKEN_HEADER_ALIASES = ["x-mcp-token", "x-mcp-api-key", "x-mcp-key"];
+const MCP_MANIFEST_PATH = "/.well-known/mcp.json";
+const DEFAULT_CONTACT_EMAIL = process.env.MCP_CONTACT_EMAIL || "support@markdownify.dev";
+const DEFAULT_CONTACT_NAME = process.env.MCP_CONTACT_NAME || "Markdownify Maintainers";
+const PUBLIC_BASE_URL = (process.env.MCP_PUBLIC_BASE_URL || process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${PORT}`).replace(/\/$/, "");
+const CONNECTOR_DOC_BASE_PATH = "/connector-docs";
+const MAX_UPLOAD_MB = Math.round(MAX_UPLOAD_BYTES / (1024 * 1024));
+const UPLOAD_TTL_HOURS = Math.round(UPLOAD_TTL_MS / (60 * 60 * 1000));
+
+const SERVER_INSTRUCTIONS = `Markdownify converts files, URLs, and media into Markdown so models can read them easily. Use the \"search\" tool to discover docs like upload instructions, then call \"fetch\" to read the full guidance. Conversion tools accept either an https URL or a server-side filepath. When you only have a local file, call \"upload-file-for-conversion\" first to learn how to upload safely.`;
+
+type ConnectorDoc = {
+  id: string;
+  title: string;
+  text: string;
+  url: string;
+  keywords: string[];
+  metadata?: Record<string, string>;
+};
+
+function buildPublicUrl(path: string) {
+  const trimmedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${PUBLIC_BASE_URL}${trimmedPath}`;
+}
+
+function makeDoc(doc: Omit<ConnectorDoc, "url">): ConnectorDoc {
+  return { ...doc, url: buildPublicUrl(`${CONNECTOR_DOC_BASE_PATH}/${doc.id}`) };
+}
+
+const CONNECTOR_DOCS: ConnectorDoc[] = [
+  makeDoc({
+    id: "getting-started",
+    title: "Markdownify MCP Overview",
+    keywords: ["overview", "intro", "markdown", "tools", "workflow"],
+    metadata: { category: "guide" },
+    text: `# Markdownify MCP Overview\n\n${SERVER_INSTRUCTIONS}\n\n## Standard workflow\n1. Use one of the conversion tools (pdf-to-markdown, webpage-to-markdown, youtube-to-markdown, etc.) with a public URL whenever possible.\n2. When you need to process a local file, call \`upload-file-for-conversion\` to get upload instructions and use the returned filepath.\n3. Use \`get-markdown-file\` when you already know the server-side path to a markdown file inside the allowed share directory.\n4. Rely on \`search\` and \`fetch\` to pull additional docs explaining workflows or server policies.\n\n## Available tools\n- youtube-to-markdown\n- pdf-to-markdown\n- bing-search-to-markdown\n- webpage-to-markdown\n- image-to-markdown\n- audio-to-markdown\n- docx-to-markdown\n- xlsx-to-markdown\n- pptx-to-markdown\n- get-markdown-file\n- upload-file-for-conversion\n- search\n- fetch\n`,
+  }),
+  makeDoc({
+    id: "uploading-files",
+    title: "Uploading files safely",
+    keywords: ["upload", "file", "limits", "conversion", "instructions"],
+    metadata: {
+      category: "uploads",
+      maxUploadMb: String(MAX_UPLOAD_MB),
+      cleanupHours: String(UPLOAD_TTL_HOURS),
+    },
+    text: `# Uploading files safely\n\nUse uploads when the source document is only available on your local machine.\n\n## Recommended flow\n1. Call \`upload-file-for-conversion\` with the tool you plan to use.\n2. Follow the returned curl instructions to POST to /upload or /upload-and-convert.\n3. For two-step uploads, use the \`filepath\` from the upload response with the matching conversion tool.\n\n## Limits\n- Maximum file size: ${MAX_UPLOAD_MB} MB\n- Files are cleaned up automatically after roughly ${UPLOAD_TTL_HOURS} hour(s)\n- Allowed extensions can be restricted via the ALLOWED_EXTENSIONS environment variable\n\n## Security notes\n- Only absolute paths inside the configured share directory are allowed when \`MD_SHARE_DIR\` is set.\n- Direct system paths from remote machines are rejected to prevent unsafe access.\n`,
+  }),
+  makeDoc({
+    id: "endpoints-and-auth",
+    title: "Endpoints, auth, and manifests",
+    keywords: ["endpoint", "auth", "token", "manifest", "sse"],
+    metadata: {
+      category: "operations",
+      ssePath: MCP_SSE_PATH,
+      httpPath: MCP_STREAMABLE_HTTP_PATH,
+    },
+    text: `# Endpoints, auth, and manifests\n\n## Transports\n- SSE: ${buildPublicUrl(MCP_SSE_PATH)}\n- Streamable HTTP: ${buildPublicUrl(MCP_STREAMABLE_HTTP_PATH)}\n- Messages relay: ${buildPublicUrl(MCP_MESSAGES_PATH)}\n\n## Authentication\n${MCP_HTTP_TOKEN ? "Send requests with an Authorization header using the provided bearer token." : "This deployment does not require an MCP bearer token by default."}\n\n## Discovery\nThe server publishes a manifest at ${buildPublicUrl(MCP_MANIFEST_PATH)} describing transports, tools, and contact information.\n`,
+  }),
+];
+
+const CONNECTOR_DOC_INDEX = new Map(CONNECTOR_DOCS.map(doc => [doc.id, doc] as const));
+
+function getConnectorDoc(id: string): ConnectorDoc {
+  const doc = CONNECTOR_DOC_INDEX.get(id);
+  if (!doc) throw new Error(`Document not found for id "${id}"`);
+  return doc;
+}
+
+function searchConnectorDocs(query: string): ConnectorDoc[] {
+  const trimmed = query.trim().toLowerCase();
+  const tokens = trimmed ? trimmed.split(/\s+/).filter(Boolean) : [];
+  const scored = CONNECTOR_DOCS.map(doc => {
+    const haystack = `${doc.title} ${doc.keywords.join(" ")} ${doc.text}`.toLowerCase();
+    let score = 0;
+    if (!tokens.length) {
+      score = doc.id === "getting-started" ? 2 : 1;
+    } else {
+      for (const token of tokens) {
+        if (doc.keywords.some(k => k.includes(token))) score += 3;
+        if (haystack.includes(token)) score += 1;
+      }
+    }
+    if (score > 0 && doc.id === "getting-started") score += 0.5;
+    return { doc, score };
+  }).filter(entry => entry.score > 0);
+
+  if (!scored.length) {
+    const fallback = CONNECTOR_DOC_INDEX.get("getting-started");
+    return fallback ? [fallback] : [];
+  }
+
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, 5).map(entry => entry.doc);
+}
+
+function buildManifest() {
+  const transports = [
+    { type: "sse", url: buildPublicUrl(MCP_SSE_PATH) },
+    { type: "http", url: buildPublicUrl(MCP_STREAMABLE_HTTP_PATH) },
+  ];
+
+  const capabilities: Record<string, unknown> = {
+    tools: Object.values(tools).map(tool => tool.name),
+    supports_search: true,
+    supports_fetch: true,
+  };
+
+  if (ENABLE_HTTP) {
+    capabilities.uploads = {
+      multipart: true,
+      max_upload_bytes: MAX_UPLOAD_BYTES,
+      auto_cleanup_ms: UPLOAD_TTL_MS,
+      upload_url: buildPublicUrl("/upload"),
+      upload_and_convert_url: buildPublicUrl("/upload-and-convert"),
+    };
+  }
+
+  return {
+    schema_version: "2024-11-0",
+    id: "markdownify-mcp",
+    name: "Markdownify MCP Server",
+    version: "0.1.0",
+    server: {
+      name: "mcp-markdownify-server",
+      version: "0.1.0",
+    },
+    description:
+      "Convert documents, web content, and media to Markdown using Markdownify via the Model Context Protocol.",
+    instructions: SERVER_INSTRUCTIONS,
+    homepage: "https://github.com/zcaceres/markdownify-mcp",
+    documentation_url: buildPublicUrl(`${CONNECTOR_DOC_BASE_PATH}/getting-started`),
+    contact: {
+      name: DEFAULT_CONTACT_NAME,
+      email: DEFAULT_CONTACT_EMAIL,
+    },
+    authentication: MCP_HTTP_TOKEN
+      ? {
+          type: "bearer",
+          header: "Authorization",
+          format: "Bearer <token>",
+          note: "Obtain the token from the Markdownify server operator and include it as a bearer token.",
+        }
+      : { type: "none" },
+    transports,
+    capabilities,
+    resources: CONNECTOR_DOCS.map(doc => ({ id: doc.id, title: doc.title, url: doc.url })),
+  };
+}
+
+const TOKEN_HEADER_ALIASES = [
+  "authorization",
+  "x-mcp-token",
+  "x-mcp-api-key",
+  "x-mcp-key",
+];
 
 function extractToken(headers: http.IncomingHttpHeaders) {
   for (const key of TOKEN_HEADER_ALIASES) {
     const v = headers[key];
-    if (v) return Array.isArray(v) ? v[0] : v;
+    if (!v) continue;
+    const value = Array.isArray(v) ? v[0] : v;
+    if (!value) continue;
+    if (key === "authorization") {
+      const trimmed = value.trim();
+      const lower = trimmed.toLowerCase();
+      if (lower.startsWith("bearer ")) return trimmed.slice(7).trim();
+      return trimmed;
+    }
+    return value;
   }
   return "";
 }
@@ -565,6 +788,20 @@ app.post("/convert", async (c) => {
   }
 });
 
+app.get(`${CONNECTOR_DOC_BASE_PATH}/:id`, (c) => {
+  const id = c.req.param("id");
+  if (!id) return c.json({ error: "id required" }, 400);
+  const doc = CONNECTOR_DOC_INDEX.get(id);
+  if (!doc) return c.json({ error: "not found" }, 404);
+  return c.json({
+    id: doc.id,
+    title: doc.title,
+    text: doc.text,
+    url: doc.url,
+    metadata: doc.metadata ?? null,
+  });
+});
+
 /* -------------------- Periodic Cleanup -------------------- */
 setInterval(async () => {
   try {
@@ -591,11 +828,21 @@ const server = http.createServer(async (req, res) => {
     // CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-MCP-Session-ID');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-MCP-Session-ID, X-MCP-Token, X-MCP-API-Key, X-MCP-Key');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(200);
       res.end();
+      return;
+    }
+
+    if (req.method === 'GET' && req.url?.startsWith(MCP_MANIFEST_PATH)) {
+      const manifest = buildManifest();
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Cache-Control": "public, max-age=60",
+      });
+      res.end(JSON.stringify(manifest));
       return;
     }
 
@@ -688,8 +935,54 @@ const server = http.createServer(async (req, res) => {
           case "tools/call": {
             const { name, arguments: args } = params;
             if (!name) throw new Error("name is required");
-            const validatedArgs = RequestPayloadSchema.parse(args || {});
-            
+            if (name === tools.SearchTool.name) {
+              const searchArgs = SearchArgsSchema.parse(
+                typeof args === "string" ? { query: args } : args || {},
+              );
+              const docs = searchConnectorDocs(searchArgs.query);
+              result = {
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({
+                      results: docs.map(doc => ({
+                        id: doc.id,
+                        title: doc.title,
+                        url: doc.url,
+                      })),
+                    }),
+                  },
+                ],
+                isError: false,
+              };
+              break;
+            }
+
+            if (name === tools.FetchTool.name) {
+              const fetchArgs = FetchArgsSchema.parse(
+                typeof args === "string" ? { id: args } : args || {},
+              );
+              const doc = getConnectorDoc(fetchArgs.id);
+              result = {
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({
+                      id: doc.id,
+                      title: doc.title,
+                      text: doc.text,
+                      url: doc.url,
+                      metadata: doc.metadata ?? null,
+                    }),
+                  },
+                ],
+                isError: false,
+              };
+              break;
+            }
+
+            const validatedArgs = parseStandardArgs(args);
+
             let conversionResult;
             switch (name) {
               case tools.YouTubeToMarkdownTool.name:
@@ -708,37 +1001,35 @@ const server = http.createServer(async (req, res) => {
                 });
                 break;
               }
-          case tools.PDFToMarkdownTool.name:
-          case tools.ImageToMarkdownTool.name:
-          case tools.AudioToMarkdownTool.name:
-          case tools.DocxToMarkdownTool.name:
-          case tools.XlsxToMarkdownTool.name:
-          case tools.PptxToMarkdownTool.name: {
-            if (validatedArgs.url) {
-              // Handle remote files via URL
-              const parsedUrl = new URL(validatedArgs.url);
-              if (!["http:", "https:"].includes(parsedUrl.protocol))
-                throw new Error("Only http/https allowed.");
-              if (is_ip_private(parsedUrl.hostname))
-                throw new Error("Potentially dangerous URL (private IP)");
-              conversionResult = await Markdownify.toMarkdown({
-                url: validatedArgs.url,
-                projectRoot: validatedArgs.projectRoot,
-                uvPath: validatedArgs.uvPath || process.env.UV_PATH,
-              });
-            } else if (validatedArgs.filepath) {
-              // Handle local files
-              await sandboxFilePath(validatedArgs.filepath);
-              conversionResult = await Markdownify.toMarkdown({
-                filePath: validatedArgs.filepath,
-                projectRoot: validatedArgs.projectRoot,
-                uvPath: validatedArgs.uvPath || process.env.UV_PATH,
-              });
-            } else {
-              throw new Error("Either filepath or url is required");
-            }
-            break;
-          }
+              case tools.PDFToMarkdownTool.name:
+              case tools.ImageToMarkdownTool.name:
+              case tools.AudioToMarkdownTool.name:
+              case tools.DocxToMarkdownTool.name:
+              case tools.XlsxToMarkdownTool.name:
+              case tools.PptxToMarkdownTool.name: {
+                if (validatedArgs.url) {
+                  const parsedUrl = new URL(validatedArgs.url);
+                  if (!["http:", "https:"].includes(parsedUrl.protocol))
+                    throw new Error("Only http/https allowed.");
+                  if (is_ip_private(parsedUrl.hostname))
+                    throw new Error("Potentially dangerous URL (private IP)");
+                  conversionResult = await Markdownify.toMarkdown({
+                    url: validatedArgs.url,
+                    projectRoot: validatedArgs.projectRoot,
+                    uvPath: validatedArgs.uvPath || process.env.UV_PATH,
+                  });
+                } else if (validatedArgs.filepath) {
+                  await sandboxFilePath(validatedArgs.filepath);
+                  conversionResult = await Markdownify.toMarkdown({
+                    filePath: validatedArgs.filepath,
+                    projectRoot: validatedArgs.projectRoot,
+                    uvPath: validatedArgs.uvPath || process.env.UV_PATH,
+                  });
+                } else {
+                  throw new Error("Either filepath or url is required");
+                }
+                break;
+              }
               case tools.GetMarkdownFileTool.name: {
                 if (!validatedArgs.filepath) throw new Error("File path is required");
                 await sandboxFilePath(validatedArgs.filepath);

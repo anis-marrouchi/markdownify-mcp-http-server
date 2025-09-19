@@ -215,7 +215,29 @@ export const UploadFileForConversionTool = ToolSchema.parse({
         description: "Why file upload is needed (e.g., 'file is on local machine', 'file not accessible to server')",
         default: "Local file needs to be uploaded to remote server",
       },
-    },
-    required: ["tool_type"],
+  },
+  required: ["tool_type"],
+  },
+});
+
+export const SearchTool = ToolSchema.parse({
+  name: "search",
+  description:
+    "Search Markdownify connector docs and previously shared guidance to learn how to use this server inside ChatGPT or via API.",
+  inputSchema: {
+    type: "string",
+    title: "query",
+    description: "Natural language query describing the information you need about Markdownify.",
+  },
+});
+
+export const FetchTool = ToolSchema.parse({
+  name: "fetch",
+  description:
+    "Fetch a specific Markdownify connector document by id. Use ids returned by the search tool.",
+  inputSchema: {
+    type: "string",
+    title: "id",
+    description: "Identifier from a Markdownify search result.",
   },
 });
