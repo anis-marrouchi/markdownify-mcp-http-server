@@ -49,13 +49,29 @@ const RequestPayloadSchema = z.object({
   instructions: z.boolean().optional(),
 });
 
-const SearchArgsSchema = z.object({
-  query: z.string().transform(s => s.trim()),
-});
+const SearchArgsSchema = z
+  .union([
+    z.string(),
+    z.object({ query: z.string() }),
+  ])
+  .transform(value => {
+    const query = typeof value === "string" ? value : value.query;
+    const trimmed = query.trim();
+    if (!trimmed) throw new Error("query is required");
+    return { query: trimmed };
+  });
 
-const FetchArgsSchema = z.object({
-  id: z.string().trim().min(1, "id is required"),
-});
+const FetchArgsSchema = z
+  .union([
+    z.string(),
+    z.object({ id: z.string() }),
+  ])
+  .transform(value => {
+    const id = typeof value === "string" ? value : value.id;
+    const trimmed = id.trim();
+    if (!trimmed) throw new Error("id is required");
+    return { id: trimmed };
+  });
 
 type StandardToolArgs = z.infer<typeof RequestPayloadSchema>;
 
@@ -89,10 +105,8 @@ export function createServer() {
       try {
         switch (name) {
           case tools.SearchTool.name: {
-            const searchArgs = SearchArgsSchema.parse(
-              typeof args === "string" ? { query: args } : args || {},
-            );
-            const docs = searchConnectorDocs(searchArgs.query);
+            const { query } = SearchArgsSchema.parse(args ?? "");
+            const docs = searchConnectorDocs(query);
             return {
               content: [
                 {
@@ -110,10 +124,8 @@ export function createServer() {
             };
           }
           case tools.FetchTool.name: {
-            const fetchArgs = FetchArgsSchema.parse(
-              typeof args === "string" ? { id: args } : args || {},
-            );
-            const doc = getConnectorDoc(fetchArgs.id);
+            const { id } = FetchArgsSchema.parse(args ?? "");
+            const doc = getConnectorDoc(id);
             return {
               content: [
                 {
@@ -936,10 +948,8 @@ const server = http.createServer(async (req, res) => {
             const { name, arguments: args } = params;
             if (!name) throw new Error("name is required");
             if (name === tools.SearchTool.name) {
-              const searchArgs = SearchArgsSchema.parse(
-                typeof args === "string" ? { query: args } : args || {},
-              );
-              const docs = searchConnectorDocs(searchArgs.query);
+              const { query } = SearchArgsSchema.parse(args ?? "");
+              const docs = searchConnectorDocs(query);
               result = {
                 content: [
                   {
@@ -959,10 +969,8 @@ const server = http.createServer(async (req, res) => {
             }
 
             if (name === tools.FetchTool.name) {
-              const fetchArgs = FetchArgsSchema.parse(
-                typeof args === "string" ? { id: args } : args || {},
-              );
-              const doc = getConnectorDoc(fetchArgs.id);
+              const { id } = FetchArgsSchema.parse(args ?? "");
+              const doc = getConnectorDoc(id);
               result = {
                 content: [
                   {

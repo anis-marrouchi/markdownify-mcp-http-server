@@ -225,9 +225,16 @@ export const SearchTool = ToolSchema.parse({
   description:
     "Search Markdownify connector docs and previously shared guidance to learn how to use this server inside ChatGPT or via API.",
   inputSchema: {
-    type: "string",
-    title: "query",
-    description: "Natural language query describing the information you need about Markdownify.",
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        description:
+          "Natural language query describing the information you need about Markdownify.",
+      },
+    },
+    required: ["query"],
+    additionalProperties: false,
   },
 });
 
@@ -236,8 +243,15 @@ export const FetchTool = ToolSchema.parse({
   description:
     "Fetch a specific Markdownify connector document by id. Use ids returned by the search tool.",
   inputSchema: {
-    type: "string",
-    title: "id",
-    description: "Identifier from a Markdownify search result.",
+    type: "object",
+    properties: {
+      id: {
+        type: "string",
+        description: "Identifier from a Markdownify search result.",
+      },
+    },
+    required: ["id"],
+    additionalProperties: false,
   },
 });
+
